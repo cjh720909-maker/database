@@ -29,8 +29,17 @@ try {
 
 const app = express();
 const port = 3010;
+
+// ------------------------------------------------------------------
+// [Prisma 멀티 클라이언트 설정]
+// ------------------------------------------------------------------
+// 1. MySQL (조회 전용)
 const prisma = new PrismaClient({ log: ['warn', 'error'] });
-const COMMENTS_FILE = path.join(__dirname, 'column_comments.json');
+
+// 2. SQLite (주석 저장용)
+// schema.sqlite.prisma에서 지정한 output 경로에서 가져옵니다.
+const { PrismaClient: SQLitePrismaClient } = require('@prisma/client-sqlite');
+const sqlitePrisma = new SQLitePrismaClient();
 
 // ------------------------------------------------------------------
 // [설정] 중요 테이블 목록 (상단 고정)
@@ -78,33 +87,54 @@ app.get('/api/tables', (req, res) => {
 });
 
 // ------------------------------------------------------------------
-// [주석 관리 API]
+// [주석 관리 API - SQLite 사용]
 // ------------------------------------------------------------------
-app.get('/api/comments', (req, res) => {
+app.get('/api/comments', async (req, res) => {
     const { table } = req.query;
-    if (!fs.existsSync(COMMENTS_FILE)) return res.json({});
-
     try {
-        const allComments = JSON.parse(fs.readFileSync(COMMENTS_FILE, 'utf8'));
-        res.json(allComments[table] || {});
+        const comments = await sqlitePrisma.columnComment.findMany({
+            where: { tableName: table }
+        });
+
+        // { columnName: comment } 형식으로 변환하여 프론트에 전달
+        const commentMap = {};
+        comments.forEach(c => {
+            commentMap[c.columnName] = c.comment;
+        });
+        res.json(commentMap);
     } catch (e) {
+        console.error("주석 조회 에러:", e);
         res.json({});
     }
 });
 
-app.post('/api/comments', express.json(), (req, res) => {
+app.post('/api/comments', express.json(), async (req, res) => {
     const { table, comments } = req.body;
-    let allComments = {};
 
-    if (fs.existsSync(COMMENTS_FILE)) {
-        try {
-            allComments = JSON.parse(fs.readFileSync(COMMENTS_FILE, 'utf8'));
-        } catch (e) { }
+    try {
+        // 기존 주석 삭제 후 새로 입력 (또는 upsert 사용)
+        // 여기서는 데이터가 많지 않으므로 순차적으로 upsert 처리
+        for (const [col, msg] of Object.entries(comments)) {
+            await sqlitePrisma.columnComment.upsert({
+                where: {
+                    tableName_columnName: {
+                        tableName: table,
+                        columnName: col
+                    }
+                },
+                update: { comment: msg },
+                create: {
+                    tableName: table,
+                    columnName: col,
+                    comment: msg
+                }
+            });
+        }
+        res.json({ success: true });
+    } catch (e) {
+        console.error("주석 저장 에러:", e);
+        res.status(500).json({ success: false, error: e.message });
     }
-
-    allComments[table] = comments;
-    fs.writeFileSync(COMMENTS_FILE, JSON.stringify(allComments, null, 2), 'utf8');
-    res.json({ success: true });
 });
 
 app.get('/api/data', async (req, res) => {
