@@ -5,8 +5,8 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
-  url      = "file:./comments.db"
+  provider = "postgresql"
+  url      = env("COMMENT_DATABASE_URL")
 }
 
 model ColumnComment {
